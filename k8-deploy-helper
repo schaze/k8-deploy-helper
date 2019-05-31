@@ -1,0 +1,76 @@
+#!/bin/bash
+
+if [[ "$1" == "--help" ]]; then 
+    echo -n "
+
+${0}
+========================================================
+
+Helper script for kubectl deployments using minimal requirements. (bash, grep, sed, base64)
+Offers:
+ - Easy substitution             -- {{MY_VARNAME}}
+ - Reading from user input       -- {{MY_VARNAME | READ}}
+ - Reading from file             -- {{MY_VARNAME | FILE:<filepath>}}
+ - Base64 encoding for secrets   -- {{MY_VARNAME | BASE64}}
+
+Options are combineable, e.g.: {{MY_VARNAME | READ | BASE64}}
+Note:
+  Plain text multiline file inputs are not supported yet (due to indentation)
+  When using base64 encoding this is fine
+
+
+"
+    exit 0
+fi
+
+TEMPLATE=$(cat ${1:-})
+
+
+IFS=$'\n'; 
+SUBSTITUTES=($(echo "$TEMPLATE" | grep -oP "(\{{.*?\}})" | sort -u))
+
+for subindex in "${!SUBSTITUTES[@]}"; do
+    MATCH=${SUBSTITUTES[subindex]}
+
+    EXTRACT=$(echo -e "${SUBSTITUTES[subindex]}"| sed -e "s/^{{//g" -e "s/}}$//g" -e "s/ //g")
+    IFS='|'; read -r -a TOKENS <<< "$EXTRACT"
+
+    varname=${TOKENS[0]}
+    varvalue=${!varname}
+
+
+    if [[ ${#TOKENS[@]} -gt 1 ]]; then 
+        ACTIONS=(${TOKENS[@]:1})
+        for index in "${!ACTIONS[@]}"
+        do
+            action=${ACTIONS[index]}
+
+            if [[ "$action" == "READ" ]]; then
+              echo "Enter value for [$varname]": 1>&2
+              read varvalue < /dev/tty
+            fi
+            if [[ "$action" == "BASE64" ]]; then
+                varvalue=$(echo -n "$varvalue" | base64 -w 0)
+            fi
+            if [[ "${action:0:5}" == "FILE:" ]]; then
+                filename=${action:5}
+                if [[ -f $filename ]]; then
+                    varvalue=$(cat $filename)
+                fi
+            fi
+
+
+        done
+    fi
+    echo "$varname=$varvalue" 1>&2
+
+    ESCAPED_SUBS=$(echo "${SUBSTITUTES[subindex]}" |  sed -e 's/[]\/$*.^[]/\\&/g')
+    
+    # Escape value for use as a Sed replacement string.
+    IFS= read -d '' -r < <(sed -e ':a' -e '$!{N;ba' -e '}' -e 's/[&/\]/\\&/g; s/\n/\\&/g' <<<"$varvalue")
+    replaceEscaped=${REPLY%$'\n'}
+
+    TEMPLATE=$(echo "$TEMPLATE" | sed -e "s/${ESCAPED_SUBS}/${replaceEscaped}/g")
+done
+
+echo "$TEMPLATE"
